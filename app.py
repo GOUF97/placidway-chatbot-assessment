@@ -4,11 +4,8 @@ from langchain_community.document_loaders import WebBaseLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
-from langchain.chains import create_retrieval_chain
-from langchain.chains.combine_documents import create_stuff_documents_chain
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage, AIMessage
-
 
 # Page Config
 st.set_page_config(
@@ -50,16 +47,13 @@ URLS = [
 
 @st.cache_resource
 def get_vector_store(api_key):
-    # Load documents with custom user agent
     loader = WebBaseLoader(URLS)
     loader.requests_kwargs = {'headers': {'User-Agent': 'PlacidWayBot/1.0 (Medical Tourism QA Crawler)'}}
     docs = loader.load()
 
-    # Split text
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     splits = text_splitter.split_documents(docs)
 
-    # Embeddings & Vector Store
     embeddings = OpenAIEmbeddings(openai_api_key=api_key)
     vectorstore = Chroma.from_documents(documents=splits, embedding=embeddings)
     return vectorstore.as_retriever(search_kwargs={"k": 4})
@@ -70,34 +64,12 @@ except Exception as e:
     st.error(f"Error loading knowledge base: {e}")
     st.stop()
 
-# LLM & Prompt Setup
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, openai_api_key=api_key_input)
-
-system_prompt = (
-    "You are an expert AI Assistant for PlacidWay, a global medical tourism platform. "
-    "Your task is to answer user questions strictly based on the provided context retrieved from official PlacidWay pages. "
-    "CRITICAL RULES:\n"
-    "1. ACCURACY & GROUNDING: Answer ONLY using facts, prices, treatments, and clinics present in the context. Every answer must cite its source URL(s).\n"
-    "2. HONEST 'I DON'T KNOW': If the exact answer, price, or clinic is not present in the context, you MUST state: 'I do not have that information in my knowledge base.' and suggest contacting PlacidWay for a free quote. Never invent prices, clinics, or medical facts.\n"
-    "3. COST QUESTIONS: Return prices with exact currency and any context given in the page (e.g., 'starting from', package inclusions).\n"
-    "4. TRICK & OUT OF SCOPE: Reject wrong assumptions (e.g., false prices), politely decline out-of-scope questions (weather, general trivia), and refuse to give direct medical diagnoses or safety advice for specific health conditions, recommending consultation with a doctor instead.\n\n"
-    "Context:\n{context}"
-)
-
-prompt = ChatPromptTemplate.from_messages([
-    ("system", system_prompt),
-    MessagesPlaceholder(variable_name="chat_history"),
-    ("human", "{input}")
-])
-
-question_answer_chain = create_stuff_documents_chain(llm, prompt)
-rag_chain = create_retrieval_chain(retriever, question_answer_chain)
 
 # Initialize Chat History
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
-# Display Chat Messages
 for message in st.session_state.chat_history:
     if isinstance(message, HumanMessage):
         with st.chat_message("user"):
@@ -106,7 +78,6 @@ for message in st.session_state.chat_history:
         with st.chat_message("assistant"):
             st.markdown(message.content)
 
-# User Input
 if user_query := st.chat_input("Ask a question about treatments, costs, or clinics..."):
     with st.chat_message("user"):
         st.markdown(user_query)
@@ -116,19 +87,37 @@ if user_query := st.chat_input("Ask a question about treatments, costs, or clini
     with st.chat_message("assistant"):
         with st.spinner("Searching PlacidWay knowledge base..."):
             try:
-                response = rag_chain.invoke({
-                    "input": user_query,
-                    "chat_history": st.session_state.chat_history
-                })
-                answer = response["answer"]
+                # Retrieve relevant documents
+                retrieved_docs = retriever.invoke(user_query)
+                context_text = "\n\n".join([doc.page_content for doc in retrieved_docs])
                 
-                # Extract source URLs if available in retrieved docs
                 sources = set()
-                if "context" in response:
-                    for doc in response["context"]:
-                        if "source" in doc.metadata:
-                            sources.add(doc.metadata["source"])
-                
+                for doc in retrieved_docs:
+                    if "source" in doc.metadata:
+                        sources.add(doc.metadata["source"])
+
+                system_prompt = (
+                    "You are an expert AI Assistant for PlacidWay, a global medical tourism platform. "
+                    "Your task is to answer user questions strictly based on the provided context retrieved from official PlacidWay pages. "
+                    "CRITICAL RULES:\n"
+                    "1. ACCURACY & GROUNDING: Answer ONLY using facts, prices, treatments, and clinics present in the context. Every answer must cite its source URL(s).\n"
+                    "2. HONEST 'I DON'T KNOW': If the exact answer, price, or clinic is not present in the context, you MUST state: 'I do not have that information in my knowledge base.' and suggest contacting PlacidWay for a free quote. Never invent prices, clinics, or medical facts.\n"
+                    "3. COST QUESTIONS: Return prices with exact currency and any context given in the page (e.g., 'starting from', package inclusions).\n"
+                    "4. TRICK & OUT OF SCOPE: Reject wrong assumptions (e.g., false prices), politely decline out-of-scope questions (weather, general trivia), and refuse to give direct medical diagnoses or safety advice for specific health conditions, recommending consultation with a doctor instead.\n\n"
+                    f"Context:\n{context_text}"
+                )
+
+                # Format messages for chat model
+                messages = [("system", system_prompt)]
+                for msg in st.session_state.chat_history[-6:]: # Keep last 6 turns for context
+                    if isinstance(msg, HumanMessage):
+                        messages.append(("human", msg.content))
+                    elif isinstance(msg, AIMessage):
+                        messages.append(("ai", msg.content))
+
+                response = llm.invoke(messages)
+                answer = response.content
+
                 if sources:
                     answer += "\n\n**Sources:**\n" + "\n".join([f"- [{src}]({src})" for src in sources])
                 
