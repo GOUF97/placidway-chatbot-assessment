@@ -3,8 +3,7 @@ import streamlit as st
 from langchain_community.document_loaders import WebBaseLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
-from langchain_openai import OpenAIOpenAIEmbeddings if False else OpenAIEmbeddings
-from langchain_openai import ChatOpenAI
+from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -49,13 +48,7 @@ URLS = [
 ]
 
 @st.cache_resource
-hashing_func = lambda x: x
 def get_vector_store(api_key):
-    from langchain_openai import OpenAIEmbeddings
-    from langchain.text_splitter import RecursiveCharacterTextSplitter
-    from langchain_community.document_loaders import WebBaseLoader
-    from langchain_community.vectorstores import Chroma
-
     # Load documents with custom user agent
     loader = WebBaseLoader(URLS)
     loader.requests_kwargs = {'headers': {'User-Agent': 'PlacidWayBot/1.0 (Medical Tourism QA Crawler)'}}
@@ -77,7 +70,6 @@ except Exception as e:
     st.stop()
 
 # LLM & Prompt Setup
-from langchain_openai import ChatOpenAI
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, openai_api_key=api_key_input)
 
 system_prompt = (
